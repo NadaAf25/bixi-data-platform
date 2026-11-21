@@ -1,0 +1,23 @@
+version: 2
+
+models:
+  - name: hourly_demand
+    description: One row per hour between the first and last weather observation.
+    columns:
+      - name: hour_utc
+        tests:
+          - unique
+          - not_null
+      - name: trips
+        tests:
+          - not_null
+      - name: has_weather
+        tests:
+          - not_null
+
+  - name: dim_holiday
+    columns:
+      - name: holiday_date
+        tests:
+          - unique
+          - not_null
