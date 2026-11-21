@@ -1,0 +1,12 @@
+bixi_platform:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: localhost
+      port: 5434
+      user: bixi
+      password: "{{ env_var('DBT_PASSWORD', 'bixi') }}"
+      dbname: bixi
+      schema: analytics
+      threads: 4

@@ -14,3 +14,4 @@ __pycache__/
 airflow/logs/
 dbt/target/
 dbt/logs/
+.user.yml
