@@ -8,8 +8,11 @@ WITH bounds AS (
     FROM staging.weather_hourly
 ),
 calendar AS (
-    SELECT generate_series(first_hour, last_hour, interval '1 hour') AS hour_utc
-    FROM bounds
+    SELECT
+        gs AS hour_utc,
+        gs AT TIME ZONE 'America/Montreal' AS hour_local
+    FROM bounds,
+         generate_series(bounds.first_hour, bounds.last_hour, interval '1 hour') AS gs
 ),
 trips AS (
     SELECT start_hour_utc AS hour_utc, count(*) AS trips
@@ -18,16 +21,18 @@ trips AS (
 )
 SELECT
     c.hour_utc,
-    c.hour_utc AT TIME ZONE 'America/Montreal'                              AS hour_local,
-    EXTRACT(hour FROM c.hour_utc AT TIME ZONE 'America/Montreal')::int      AS hour_of_day,
-    EXTRACT(isodow FROM c.hour_utc AT TIME ZONE 'America/Montreal')::int    AS day_of_week,
-    (EXTRACT(isodow FROM c.hour_utc AT TIME ZONE 'America/Montreal') >= 6)  AS is_weekend,
-    COALESCE(t.trips, 0)                                                    AS trips,
-    (w.hour_utc IS NOT NULL)                                                AS has_weather,
+    c.hour_local,
+    extract(hour FROM c.hour_local)::int AS hour_of_day,
+    extract(isodow FROM c.hour_local)::int AS day_of_week,
+    extract(isodow FROM c.hour_local) >= 6 AS is_weekend,
+    (h.holiday_date IS NOT NULL) AS is_holiday,
+    h.holiday_name,
+    COALESCE(t.trips, 0) AS trips,
+    (w.hour_utc IS NOT NULL) AS has_weather,
     w.temp_c,
     w.dew_point_c,
     w.precip_mm,
-    (w.precip_mm > 0)                                                       AS is_raining,
+    (w.precip_mm > 0) AS is_raining,
     w.humidity,
     w.pressure,
     w.wind_speed,
@@ -35,4 +40,6 @@ SELECT
     w.weather_desc
 FROM calendar c
 LEFT JOIN trips t ON t.hour_utc = c.hour_utc
-LEFT JOIN staging.weather_hourly w ON w.hour_utc = c.hour_utc;
+LEFT JOIN staging.weather_hourly w ON w.hour_utc = c.hour_utc
+LEFT JOIN marts.dim_holiday h ON h.holiday_date = c.hour_local::date
+ORDER BY c.hour_utc;
