@@ -1,0 +1,16 @@
+# Raw and generated data never goes to GitHub
+data/
+*.zip
+
+# Secrets and local settings
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Airflow and dbt (used later)
+airflow/logs/
+dbt/target/
+dbt/logs/
