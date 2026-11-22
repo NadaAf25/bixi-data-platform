@@ -35,9 +35,16 @@ Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434
 - **Missing weather is flagged, not dropped**: trips are never lost, `has_weather` marks hours without a measurement.
 - The earlier SQL scripts in `sql/` produced the same tables and were used to validate the dbt models (same row counts and trip totals).
 
+## Getting the data
+
+The raw files are not stored in the repository. Put them in `data/raw/`:
+
+- **BIXI trips**: the yearly open-data ZIP files from BIXI Montreal (one ZIP per year, each containing one CSV). Keep the ZIPs as downloaded, `load_raw.py` reads them directly.
+- **Hourly weather**: one CSV per year named `weather_<year>.csv` (for example `weather_2025.csv`, `weather_2026.csv`). They are produced by the extraction script of the companion project [bixi-weather-demand](https://github.com/NadaAf25/bixi-weather-demand): run `src/01_extract_weather.py --years 2025 2026` there (see `--help` for the other options), then copy the CSV files into this project's `data/raw/`.
+
 ## Run it
 
-Requirements: Docker Desktop, and the raw files in `data/raw/` (not included in the repository): the BIXI yearly ZIPs and `weather_2025.csv` / `weather_2026.csv`.
+Requirements: Docker Desktop and the raw files in `data/raw/` (see above).
 
 ```bash
 docker compose up -d --build
