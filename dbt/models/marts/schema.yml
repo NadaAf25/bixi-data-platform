@@ -21,3 +21,25 @@ models:
         tests:
           - unique
           - not_null
+
+  - name: dim_station
+    columns:
+      - name: station_key
+        tests:
+          - unique
+          - not_null
+
+  - name: fct_trips
+    columns:
+      - name: start_station_key
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_station')
+                field: station_key
+      - name: end_station_key
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_station')
+                field: station_key
