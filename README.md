@@ -1,50 +1,62 @@
 # BIXI x Weather Data Platform
 
-A local data pipeline that loads Montreal BIXI bike-share trips (2025 to August 2026) and hourly weather observations into PostgreSQL, then models them with dbt into an hourly demand table.
+A local data pipeline that loads Montreal BIXI bike-share trips (2025 to August 2026) and hourly weather observations into PostgreSQL, models them with dbt into an hourly demand table, and orchestrates the whole run with Airflow.
 
 ## Architecture
 
 ```
 BIXI trip ZIPs + weather CSVs
-        |  ingestion/load_raw.py
+        |  ingestion/load_raw.py          (Airflow task: load_raw)
         v
    raw schema        (as received, all text)
-        |  dbt
+        |  dbt build                      (Airflow task: dbt_build)
         v
  staging schema      (typed, cleaned: stg_bixi_trips, stg_weather_hourly)
-        |  dbt
+        |
         v
-  marts schema       (dim_holiday, hourly_demand)
+  marts schema       (dim_holiday, hourly_demand) + data tests
 ```
+
+Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434) and an Airflow container (`bixi-airflow`, port 8080) that runs the DAG `bixi_pipeline`: `load_raw` then `dbt_build`.
 
 ## Results
 
 - `stg_bixi_trips`: 23,351,725 trips kept (durations between 1 minute and 24 hours).
 - `stg_weather_hourly`: 14,569 hourly observations.
-- `hourly_demand`: 14,592 hours, one row per hour, joined on the UTC hour with a `has_weather` flag (23 hours have no weather observation).
-- 6 dbt data tests pass (unique and not null on keys, not null on `trips` and `has_weather`).
+- `hourly_demand`: 14,592 hours, one row per hour, joined on the UTC hour with a `has_weather` flag (23 hours have no weather observation) and an `is_holiday` flag (13 Quebec holidays, 312 hours).
+- `dbt build`: 4 models and 6 data tests pass (unique and not null on keys, not null on `trips` and `has_weather`).
+- A full Airflow run (raw reload + dbt build) takes about 8 minutes and leaves the totals unchanged.
 
 ## Design choices
 
 - **Raw data is kept as received** (text columns, source file recorded), so every cleaning rule lives in dbt and can be audited.
+- **Reloads are idempotent**: the loader deletes a file's rows before reloading it, so re-running never creates duplicates.
 - **Join on the UTC hour** to avoid daylight saving time ambiguity; local time is derived for analysis.
 - **Missing weather is flagged, not dropped**: trips are never lost, `has_weather` marks hours without a measurement.
 - The earlier SQL scripts in `sql/` produced the same tables and were used to validate the dbt models (same row counts and trip totals).
 
 ## Run it
 
-Requirements: Python 3, PostgreSQL, and the raw files in `data/raw/` (not included in the repository).
+Requirements: Docker Desktop, and the raw files in `data/raw/` (not included in the repository): the BIXI yearly ZIPs and `weather_2025.csv` / `weather_2026.csv`.
+
+```bash
+docker compose up -d --build
+psql -h localhost -p 5434 -U bixi -d bixi -f sql/01_schema_raw.sql
+```
+
+Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When both tasks are green, the result is in `marts.hourly_demand`.
+
+To run the steps by hand instead (Python 3 required):
 
 ```bash
 python -m venv .venv
 pip install dbt-postgres psycopg2-binary
-psql -h localhost -p 5434 -U bixi -d bixi -f sql/01_schema_raw.sql
 python ingestion/load_raw.py
 cd dbt
 dbt build
 ```
 
-The dbt connection is defined in `dbt/profiles.yml` (localhost:5434, user `bixi`). The default password `bixi` is for a local demo database only; set `DBT_PASSWORD` to override it, and never reuse it on an exposed server.
+The dbt connection is defined in `dbt/profiles.yml` (localhost:5434, user `bixi`). The default password `bixi` and the Airflow setup without login are for a local demo only; set `DBT_PASSWORD` to override the database password, and never expose these services on a public network.
 
 ## Data sources
 
