@@ -16,5 +16,26 @@ services:
       timeout: 3s
       retries: 10
 
+  airflow:
+    build: ./airflow
+    container_name: bixi-airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+      DATABASE_URL: postgresql://bixi:bixi@postgres:5432/bixi
+      DBT_HOST: postgres
+      DBT_PORT: "5432"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./ingestion:/opt/airflow/project/ingestion
+      - ./dbt:/opt/airflow/project/dbt
+      - ./data:/opt/airflow/project/data
+    command: standalone
+
 volumes:
   bixi_pgdata:

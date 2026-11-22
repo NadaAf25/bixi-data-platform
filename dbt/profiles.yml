@@ -3,8 +3,8 @@ bixi_platform:
   outputs:
     dev:
       type: postgres
-      host: localhost
-      port: 5434
+      host: "{{ env_var('DBT_HOST', 'localhost') }}"
+      port: "{{ env_var('DBT_PORT', '5434') | as_number }}"
       user: bixi
       password: "{{ env_var('DBT_PASSWORD', 'bixi') }}"
       dbname: bixi
