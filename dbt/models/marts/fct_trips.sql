@@ -1,4 +1,4 @@
-{{ config(materialized='table', schema='marts') }}
+{{ config(materialized='table', schema='marts', indexes=[{'columns': ['start_hour_utc']}]) }}
 
 select
     {{ station_key('start_station_name') }} as start_station_key,
@@ -9,3 +9,4 @@ select
     duration_s,
     source_file
 from {{ ref('stg_bixi_trips') }}
+order by start_hour_utc

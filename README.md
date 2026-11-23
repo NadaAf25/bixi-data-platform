@@ -52,7 +52,7 @@ Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434
 - `hourly_demand`: 14,592 hours, one row per hour, joined on the UTC hour with a `has_weather` flag (23 hours have no weather observation) and an `is_holiday` flag (13 Quebec holidays, 312 hours).
 - `daily_demand`: 608 complete days (1 January 2025 to 31 August 2026) built from `hourly_demand`, with a 7-day rolling average (window function) and a comparison with the same weekday 364 days earlier (CTEs and a self-join).
 - `dim_station`: 1,558 stations, one row per normalized station name, with one coordinate each. 51 groups of spelling variants (104 raw names, for example `10e avenue / Masson` and `10e Avenue / Masson`) are merged into one station each.
-- `fct_trips`: all 23,351,725 trips, with a start and an end station key. 3 trips have no start station name and 4 have no end station name; they are kept with an empty key.
+- `fct_trips`: all 23,351,725 trips, with a start and an end station key. 3 trips have no start station name and 4 have no end station name; they are kept with an empty key. The table is sorted by `start_hour_utc` and indexed on it (see Query performance).
 - `dq_rejected_trips`: of 23,753,414 raw trips, 401,689 (1.69%) are excluded from staging: 298,193 shorter than 1 minute, 96,219 with no end time and 7,277 longer than 24 hours. The rate is stable across the two source files (about 1.7% each).
 - `dbt build`: 8 models and 16 data tests pass (unique and not null on keys, not null on `trips` and `has_weather`, relationships from `fct_trips` to `dim_station` for both station keys, two data quality checks on rejected trips, and unique and not null checks plus a reconciliation of daily and hourly trip totals on `daily_demand`).
 - GitHub Actions runs `dbt parse` on every push to `main` and on pull requests, to catch SQL, Jinja, YAML and `ref` errors early.
@@ -68,6 +68,22 @@ Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434
 - **One coordinate per station**: the same station name appears with slightly different coordinates in the trip data, so `dim_station` keeps the most frequent one. Most stations vary by less than 100 m; the largest spread is about 336 m for a handful of stations.
 - **Station keys are an MD5 hash of a normalized station name** (lowercased, punctuation and spaces removed, in the `station_key` dbt macro), so spelling variants collapse into one station, and the fact table and the dimension can still be built independently and join. All merged variants were less than 50 m apart (44 m at most), and the most frequent spelling is kept as the display name.
 - The earlier SQL scripts in `sql/` produced the same staging and hourly tables and were used to validate the dbt models (same row counts and trip totals).
+
+## Query performance
+
+`fct_trips` (23,351,725 rows) is sorted by `start_hour_utc` and indexed on that column, both set in the dbt model. I measured the effect with `EXPLAIN (ANALYZE, BUFFERS)` on a "top 10 start stations" query, for one day (14 July 2026, 73,694 trips) and for one month (July 2026, about 2.3 million trips). Timings depend heavily on what is cached in memory, so the first run after a rebuild (cold) and a later run (warm) are both shown. Each figure is a single run.
+
+| Query | Plan | Cold | Warm |
+|---|---|---|---|
+| One day | with index | 511 ms | 40 ms |
+| One day | index disabled (full scan) | 24,289 ms | 2,384 ms |
+| One month | with index | n/a | 2,020 ms |
+| One month | index disabled (full scan) | n/a | 1,697 ms |
+
+- **One day**: with the table sorted, the index is about 60 times faster when warm (40 ms against 2.4 s). Even comparing a cold index run with a warm full scan, it is about 5 times faster. Full-scan timings vary a lot (24 s, 35 s, then 2.4 s for the same query), depending on the cache.
+- **One month**: the index does not help. With the table cached, the full scan was slightly faster (1.7 s against 2.0 s), a gap within the noise. The planner still chose the index, because its cost estimate was far below the real timing.
+- **Sorting matters**: before the table was sorted by date (correlation 0.73 between row order and `start_hour_utc`), the same index gave no gain, even for one day (1.7 s against 1.4 s). After sorting (correlation 1.0), the planner's cost estimate for one day dropped from 165,653 to 2,978.
+- **Build time**: rebuilding `fct_trips` took 9.0 minutes before sorting and 7.7 minutes after, so the sort and the index had no visible cost on this machine (one run each).
 
 ## Getting the data
 
@@ -85,7 +101,7 @@ docker compose up -d --build
 psql -h localhost -p 5434 -U bixi -d bixi -f sql/01_schema_raw.sql
 ```
 
-Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When both tasks are green, the result is in the `marts` schema. A full run (reloading about 23 million trips, then building the eight models and running the tests) takes about 35 minutes on a laptop: about 15 for `load_raw` and 20 for `dbt_build`, of which `fct_trips` alone takes about 9.
+Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When both tasks are green, the result is in the `marts` schema. A full run (reloading about 23 million trips, then building the eight models and running the tests) takes about 35 minutes on a laptop: about 15 for `load_raw` and 20 for `dbt_build`, of which `fct_trips` alone takes about 8.
 
 To run the steps by hand instead (Python 3 required):
 
