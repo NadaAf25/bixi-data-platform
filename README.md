@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/NadaAf25/bixi-data-platform/actions/workflows/ci.yml/badge.svg)
 
-A local data pipeline that loads Montreal BIXI bike-share trips (2025 to August 2026) and hourly weather observations into PostgreSQL, models them with dbt into a small star schema (a trip fact table, station and holiday dimensions, an hourly demand table, and a daily demand table with a rolling average and a year-over-year comparison) with a data quality report on rejected trips, and orchestrates the whole run with Airflow.
+A local data pipeline that loads Montreal BIXI bike-share trips (2025 to August 2026) and hourly weather observations into PostgreSQL, models them with dbt into a small star schema (a trip fact table, station and holiday dimensions, an hourly demand table, a daily demand table with a rolling average and a year-over-year comparison, and a weather and demand summary) with a data quality report on rejected trips, and orchestrates the whole run with Airflow.
 
 ## Architecture
 
@@ -25,6 +25,7 @@ flowchart LR
         dim_station["dim_station"]
         hourly["hourly_demand"]
         daily["daily_demand"]
+        weather_demand["weather_demand"]
         dim_holiday["dim_holiday"]
         dq["dq_rejected_trips"]
     end
@@ -40,6 +41,7 @@ flowchart LR
     stg_weather --> hourly
     dim_holiday --> hourly
     hourly --> daily
+    hourly --> weather_demand
     fct_trips -.->|"start and end station keys"| dim_station
 ```
 
@@ -51,10 +53,11 @@ Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434
 - `stg_weather_hourly`: 14,569 hourly observations.
 - `hourly_demand`: 14,592 hours, one row per hour, joined on the UTC hour with a `has_weather` flag (23 hours have no weather observation) and an `is_holiday` flag (13 Quebec holidays, 312 hours).
 - `daily_demand`: 608 complete days (1 January 2025 to 31 August 2026) built from `hourly_demand`, with a 7-day rolling average (window function) and a comparison with the same weekday 364 days earlier (CTEs and a self-join).
+- `weather_demand`: 24 rows, average daytime trips per hour by 5 °C band and rain flag, with the number of observed hours per cell.
 - `dim_station`: 1,558 stations, one row per normalized station name, with one coordinate each. 51 groups of spelling variants (104 raw names, for example `10e avenue / Masson` and `10e Avenue / Masson`) are merged into one station each.
 - `fct_trips`: all 23,351,725 trips, with a start and an end station key. 3 trips have no start station name and 4 have no end station name; they are kept with an empty key. The table is incremental, sorted by `start_hour_utc` and indexed on it (see Design choices and Query performance).
 - `dq_rejected_trips`: of 23,753,414 raw trips, 401,689 (1.69%) are excluded from staging: 298,193 shorter than 1 minute, 96,219 with no end time and 7,277 longer than 24 hours. The rate is stable across the two source files (about 1.7% each).
-- `dbt build`: 8 models and 16 data tests pass (unique and not null on keys, not null on `trips` and `has_weather`, relationships from `fct_trips` to `dim_station` for both station keys, two data quality checks on rejected trips, and unique and not null checks plus a reconciliation of daily and hourly trip totals on `daily_demand`).
+- `dbt build`: 9 models and 16 data tests (unique and not null on keys, not null on `trips` and `has_weather`, relationships from `fct_trips` to `dim_station` for both station keys, two data quality checks on rejected trips, and unique and not null checks plus a reconciliation of daily and hourly trip totals on `daily_demand`). `weather_demand` has no tests yet.
 - GitHub Actions runs `dbt parse` on every push to `main` and on pull requests, to catch SQL, Jinja, YAML and `ref` errors early.
 
 ## Design choices
@@ -87,6 +90,21 @@ Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434
 - **Sorting matters**: before the table was sorted by date (correlation 0.73 between row order and `start_hour_utc`), the same index gave no gain, even for one day (1.7 s against 1.4 s). After sorting (correlation 1.0), the planner's cost estimate for one day dropped from 165,653 to 2,978.
 - **Build time**: rebuilding `fct_trips` took 9.0 minutes before sorting and 7.7 minutes after, so the sort and the index had no visible cost on this machine (one run each).
 
+## Weather and demand
+
+`weather_demand` (24 rows) gives the average trips per hour by 5 °C temperature band and by rain flag (`is_raining` from `hourly_demand`), for daytime hours (7 am to 9 pm) that have a weather observation. It also keeps `hours_observed`, so thin cells are visible.
+
+| Temperature | Dry (trips/hour) | Rain (trips/hour) | Difference |
+|---|---|---|---|
+| 5 to 10 °C | 1,701 | 1,109 | -35% |
+| 10 to 15 °C | 2,616 | 1,507 | -42% |
+| 15 to 20 °C | 3,446 | 1,998 | -42% |
+| 20 to 25 °C | 4,219 | 2,810 | -33% |
+
+- Rain lowers demand by roughly a third to two fifths in every band with a reasonable number of rainy hours (74 to 163 hours), so the effect is not only a temperature effect.
+- Cells with very few rainy hours (1 hour below -20 °C, 9 hours at 25 to 30 °C, none above 30 °C) should not be interpreted.
+- This is a descriptive average over 2025 to August 2026, with no control for hour of day, weekday or season. The companion project [bixi-weather-demand](https://github.com/NadaAf25/bixi-weather-demand) models these effects.
+
 ## Getting the data
 
 The raw files are not stored in the repository. Put them in `data/raw/`:
@@ -103,7 +121,7 @@ docker compose up -d --build
 psql -h localhost -p 5434 -U bixi -d bixi -f sql/01_schema_raw.sql
 ```
 
-Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When both tasks are green, the result is in the `marts` schema. A full run (reloading about 23 million trips, then building the eight models and running the tests) takes about 35 minutes on a laptop: about 15 for `load_raw` and 20 for `dbt_build`, of which `fct_trips` takes about 8 on a first build and well under a minute on later runs.
+Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When both tasks are green, the result is in the `marts` schema. A full run (reloading about 23 million trips, then building the nine models and running the tests) takes about 35 minutes on a laptop: about 15 for `load_raw` and 20 for `dbt_build`, of which `fct_trips` takes about 8 on a first build and well under a minute on later runs.
 
 To run the steps by hand instead (Python 3 required):
 
