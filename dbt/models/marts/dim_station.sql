@@ -26,21 +26,51 @@ counted as (
     group by 1, 2, 3, 4
 ),
 
-ranked as (
+keyed as (
     select
-        *,
-        row_number() over (
-            partition by station_name
-            order by n desc, lat, lon
-        ) as rn
+        {{ station_key('station_name') }} as station_key,
+        station_name,
+        borough,
+        lat,
+        lon,
+        n
     from counted
+),
+
+names as (
+    select
+        station_key,
+        station_name,
+        row_number() over (
+            partition by station_key
+            order by sum(n) desc, station_name
+        ) as rn
+    from keyed
+    group by station_key, station_name
+),
+
+locations as (
+    select
+        station_key,
+        borough,
+        lat,
+        lon,
+        row_number() over (
+            partition by station_key
+            order by sum(n) desc, lat, lon
+        ) as rn
+    from keyed
+    group by station_key, borough, lat, lon
 )
 
 select
-    md5(station_name) as station_key,
-    station_name,
-    borough,
-    lat,
-    lon
-from ranked
-where rn = 1
+    n.station_key,
+    n.station_name,
+    l.borough,
+    l.lat,
+    l.lon
+from names n
+join locations l
+    on l.station_key = n.station_key
+   and l.rn = 1
+where n.rn = 1
