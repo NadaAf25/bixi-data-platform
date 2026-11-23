@@ -4,20 +4,37 @@ A local data pipeline that loads Montreal BIXI bike-share trips (2025 to August 
 
 ## Architecture
 
-```
-BIXI trip ZIPs + weather CSVs
-        |  ingestion/load_raw.py          (Airflow task: load_raw)
-        v
-   raw schema        (as received, all text)
-        |  dbt build                      (Airflow task: dbt_build)
-        v
- staging schema      (typed, cleaned: stg_bixi_trips, stg_weather_hourly)
-        |
-        v
-  marts schema       fct_trips ----> dim_station   (start and end station keys)
-                     hourly_demand   (hour, weather, holidays)
-                     dim_holiday
-                     + data tests
+```mermaid
+flowchart LR
+    files["BIXI trip ZIPs<br/>and weather CSVs"]
+
+    subgraph raw ["raw schema (as received, all text)"]
+        raw_trips["raw.bixi_trips"]
+        raw_weather["raw.weather_hourly"]
+    end
+
+    subgraph staging ["staging schema (typed, cleaned)"]
+        stg_trips["stg_bixi_trips"]
+        stg_weather["stg_weather_hourly"]
+    end
+
+    subgraph marts ["marts schema"]
+        fct_trips["fct_trips"]
+        dim_station["dim_station"]
+        hourly["hourly_demand"]
+        dim_holiday["dim_holiday"]
+    end
+
+    files -->|"Airflow task: load_raw"| raw_trips
+    files -->|"Airflow task: load_raw"| raw_weather
+    raw_trips -->|"Airflow task: dbt_build"| stg_trips
+    raw_weather --> stg_weather
+    stg_trips --> fct_trips
+    stg_trips --> dim_station
+    stg_trips --> hourly
+    stg_weather --> hourly
+    dim_holiday --> hourly
+    fct_trips -.->|"start and end station keys"| dim_station
 ```
 
 Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434) and an Airflow container (`bixi-airflow`, port 8080) that runs the DAG `bixi_pipeline`: `load_raw` then `dbt_build`.
@@ -57,7 +74,7 @@ docker compose up -d --build
 psql -h localhost -p 5434 -U bixi -d bixi -f sql/01_schema_raw.sql
 ```
 
-Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When both tasks are green, the result is in the `marts` schema. The first run reloads about 23 million trips, so allow several minutes.
+Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When both tasks are green, the result is in the `marts` schema. A full run (reloading about 23 million trips, then building the six models and running the tests) took about 15 minutes on a laptop.
 
 To run the steps by hand instead (Python 3 required):
 
