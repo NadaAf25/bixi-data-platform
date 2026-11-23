@@ -44,7 +44,7 @@ Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434
 - `stg_bixi_trips`: 23,351,725 trips kept (durations between 1 minute and 24 hours).
 - `stg_weather_hourly`: 14,569 hourly observations.
 - `hourly_demand`: 14,592 hours, one row per hour, joined on the UTC hour with a `has_weather` flag (23 hours have no weather observation) and an `is_holiday` flag (13 Quebec holidays, 312 hours).
-- `dim_station`: 1,611 stations, one row per station name, with one coordinate each.
+- `dim_station`: 1,558 stations, one row per normalized station name, with one coordinate each. 51 groups of spelling variants (104 raw names, for example `10e avenue / Masson` and `10e Avenue / Masson`) are merged into one station each.
 - `fct_trips`: all 23,351,725 trips, with a start and an end station key. 3 trips have no start station name and 4 have no end station name; they are kept with an empty key.
 - `dbt build`: 6 models and 10 data tests pass (unique and not null on keys, not null on `trips` and `has_weather`, and relationships from `fct_trips` to `dim_station` for both station keys).
 
@@ -55,14 +55,14 @@ Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434
 - **Join on the UTC hour** to avoid daylight saving time ambiguity; local time is derived for analysis.
 - **Missing weather is flagged, not dropped**: trips are never lost, `has_weather` marks hours without a measurement.
 - **One coordinate per station**: the same station name appears with slightly different coordinates in the trip data, so `dim_station` keeps the most frequent one. Most stations vary by less than 100 m; the largest spread is about 336 m for a handful of stations.
-- **Station keys are an MD5 hash of the station name**, so the fact table and the dimension can be built independently and still join.
+- **Station keys are an MD5 hash of a normalized station name** (lowercased, punctuation and spaces removed, in the `station_key` dbt macro), so spelling variants collapse into one station, and the fact table and the dimension can still be built independently and join. All merged variants were less than 50 m apart (44 m at most), and the most frequent spelling is kept as the display name.
 - The earlier SQL scripts in `sql/` produced the same staging and hourly tables and were used to validate the dbt models (same row counts and trip totals).
 
 ## Getting the data
 
 The raw files are not stored in the repository. Put them in `data/raw/`:
 
-- **BIXI trips**: the yearly open-data ZIP files from BIXI Montreal (one ZIP per year, each containing one CSV). Keep the ZIPs as downloaded, `load_raw.py` reads them directly.
+- **BIXI trips**: the yearly open-data ZIP files from [BIXI Montreal open data](https://bixi.com/fr/donnees-ouvertes/) (one ZIP per year, each containing one CSV). Keep the ZIPs as downloaded, `load_raw.py` reads them directly.
 - **Hourly weather**: one CSV per year named `weather_<year>.csv` (for example `weather_2025.csv`, `weather_2026.csv`). They are produced by the extraction script of the companion project [bixi-weather-demand](https://github.com/NadaAf25/bixi-weather-demand): run `src/01_extract_weather.py --years 2025 2026` there (see `--help` for the other options), then copy the CSV files into this project's `data/raw/`.
 
 ## Run it
@@ -90,7 +90,7 @@ The dbt connection is defined in `dbt/profiles.yml` (localhost:5434, user `bixi`
 
 ## Data sources
 
-- BIXI Montreal open trip data.
+- BIXI Montreal open trip data ([bixi.com/fr/donnees-ouvertes](https://bixi.com/fr/donnees-ouvertes/)).
 - Hourly weather observations from Environment and Climate Change Canada.
 
 Check each provider's terms of use before reusing the data.
