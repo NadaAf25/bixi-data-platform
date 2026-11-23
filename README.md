@@ -74,7 +74,7 @@ docker compose up -d --build
 psql -h localhost -p 5434 -U bixi -d bixi -f sql/01_schema_raw.sql
 ```
 
-Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When both tasks are green, the result is in the `marts` schema. A full run (reloading about 23 million trips, then building the six models and running the tests) took about 15 minutes on a laptop.
+Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When both tasks are green, the result is in the `marts` schema. A full run (reloading about 23 million trips, then building the six models and running the tests) took about 34 minutes on a laptop: about 15 for `load_raw` and 19 for `dbt_build`, of which `fct_trips` alone takes about 9.
 
 To run the steps by hand instead (Python 3 required):
 
