@@ -1,5 +1,7 @@
 # BIXI x Weather Data Platform
 
+![CI](https://github.com/NadaAf25/bixi-data-platform/actions/workflows/ci.yml/badge.svg)
+
 A local data pipeline that loads Montreal BIXI bike-share trips (2025 to August 2026) and hourly weather observations into PostgreSQL, models them with dbt into a small star schema (a trip fact table, station and holiday dimensions, and an hourly demand table) with a data quality report on rejected trips, and orchestrates the whole run with Airflow.
 
 ## Architecture
@@ -50,6 +52,7 @@ Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434
 - `fct_trips`: all 23,351,725 trips, with a start and an end station key. 3 trips have no start station name and 4 have no end station name; they are kept with an empty key.
 - `dq_rejected_trips`: of 23,753,414 raw trips, 401,689 (1.69%) are excluded from staging: 298,193 shorter than 1 minute, 96,219 with no end time and 7,277 longer than 24 hours. The rate is stable across the two source files (about 1.7% each).
 - `dbt build`: 7 models and 12 data tests pass (unique and not null on keys, not null on `trips` and `has_weather`, relationships from `fct_trips` to `dim_station` for both station keys, and two data quality checks on rejected trips).
+- GitHub Actions runs `dbt parse` on every push to `main` and on pull requests, to catch SQL, Jinja, YAML and `ref` errors early.
 
 ## Design choices
 
