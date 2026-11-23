@@ -57,7 +57,7 @@ Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434
 - `dim_station`: 1,558 stations, one row per normalized station name, with one coordinate each. 51 groups of spelling variants (104 raw names, for example `10e avenue / Masson` and `10e Avenue / Masson`) are merged into one station each.
 - `fct_trips`: all 23,351,725 trips, with a start and an end station key. 3 trips have no start station name and 4 have no end station name; they are kept with an empty key. The table is incremental, sorted by `start_hour_utc` and indexed on it (see Design choices and Query performance).
 - `dq_rejected_trips`: of 23,753,414 raw trips, 401,689 (1.69%) are excluded from staging: 298,193 shorter than 1 minute, 96,219 with no end time and 7,277 longer than 24 hours. The rate is stable across the two source files (about 1.7% each).
-- `dbt build`: 9 models and 16 data tests (unique and not null on keys, not null on `trips` and `has_weather`, relationships from `fct_trips` to `dim_station` for both station keys, two data quality checks on rejected trips, and unique and not null checks plus a reconciliation of daily and hourly trip totals on `daily_demand`). `weather_demand` has no tests yet.
+- `dbt build`: 9 models and 19 data tests pass (unique and not null on keys, not null on `trips` and `has_weather`, relationships from `fct_trips` to `dim_station` for both station keys, two data quality checks on rejected trips, unique and not null checks plus a reconciliation of daily and hourly trip totals on `daily_demand`, and not null checks plus a reconciliation of observed hours against `hourly_demand` on `weather_demand`).
 - GitHub Actions runs `dbt parse` on every push to `main` and on pull requests, to catch SQL, Jinja, YAML and `ref` errors early.
 
 ## Design choices
@@ -104,6 +104,7 @@ Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434
 - Rain lowers demand by roughly a third to two fifths in every band with a reasonable number of rainy hours (74 to 163 hours), so the effect is not only a temperature effect.
 - Cells with very few rainy hours (1 hour below -20 °C, 9 hours at 25 to 30 °C, none above 30 °C) should not be interpreted.
 - This is a descriptive average over 2025 to August 2026, with no control for hour of day, weekday or season. The companion project [bixi-weather-demand](https://github.com/NadaAf25/bixi-weather-demand) models these effects.
+- Three tests protect the model: the observed hours per cell must add up to the daytime hours with weather in `hourly_demand` (so no hour is lost or counted twice), and `hours_observed` and `avg_trips_per_hour` must not be null.
 
 ## Getting the data
 
