@@ -72,7 +72,7 @@ Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434
 - **No slowly changing dimension for stations**: I compared each station's average start position in 2025 and 2026 (stations with more than 100 trips in both years). The ten largest shifts are 47 to 132 m, and only one (`McNamara / St-Martin O`, 132 m) exceeds 100 m, which is the same order as the coordinate noise described above. With no clear sign of stations being moved, `dim_station` keeps one row per station instead of a history of positions. This check only covers coordinates at the station-name level; it does not test name changes.
 - **Station keys are an MD5 hash of a normalized station name** (lowercased, punctuation and spaces removed, in the `station_key` dbt macro), so spelling variants collapse into one station, and the fact table and the dimension can still be built independently and join. All merged variants were less than 50 m apart (44 m at most), and the most frequent spelling is kept as the display name.
 - **`fct_trips` is incremental**: a run only inserts trips with a `start_hour_utc` later than the latest one already loaded. Test: after deleting August 2026 (2,239,567 trips), a run restored exactly those rows in 20 s, against 460 to 536 s for a full rebuild, and the total returned to 23,351,725. Limits: trips corrected afterwards in an already loaded period, or a partially loaded hour, are not picked up. Use `dbt run --select fct_trips --full-refresh` to rebuild everything.
-- **Airflow retries and timeout (configured, not yet exercised)**: `load_raw` retries once after 2 minutes, in case of a transient database or disk error. `dbt_build` is not retried, because a failing data test is not transient, and it is stopped after 2 hours. These settings have not been run in Airflow yet.
+- **Airflow retries and timeout**: `load_raw` retries once after 2 minutes, in case of a transient database or disk error. `dbt_build` is not retried, because a failing data test is not transient, and it is stopped after 2 hours. The DAG has run end to end with these settings (both tasks succeeded on the first attempt), but no retry or timeout was actually triggered.
 - The earlier SQL scripts in `sql/` produced the same staging and hourly tables and were used to validate the dbt models (same row counts and trip totals).
 
 ## Query performance
@@ -123,7 +123,7 @@ docker compose up -d --build
 psql -h localhost -p 5434 -U bixi -d bixi -f sql/01_schema_raw.sql
 ```
 
-Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When both tasks are green, the result is in the `marts` schema. A full run (reloading about 23 million trips, then building the nine models and running the tests) takes about 35 minutes on a laptop: about 15 for `load_raw` and 20 for `dbt_build`, of which `fct_trips` takes about 8 on a first build and well under a minute on later runs.
+Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When both tasks are green, the result is in the `marts` schema. A full run (reloading about 23 million trips, then building the nine models and running the tests) took 14 min 57 s on a laptop in one measured run: about 8 minutes for `load_raw` and 7 for `dbt_build`, with `fct_trips` built incrementally.
 
 To run the steps by hand instead (Python 3 required):
 
