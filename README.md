@@ -8,6 +8,7 @@ A local data pipeline that loads Montreal BIXI bike-share trips (2025 to August 
 
 ```mermaid
 flowchart LR
+    site["BIXI open data page"]
     files["BIXI trip ZIPs<br/>and weather CSVs"]
 
     subgraph raw ["raw schema (as received, all text)"]
@@ -30,6 +31,7 @@ flowchart LR
         dq["dq_rejected_trips"]
     end
 
+    site -->|"Airflow task: download_bixi"| files
     files -->|"Airflow task: load_raw"| raw_trips
     files -->|"Airflow task: load_raw"| raw_weather
     raw_trips -->|"Airflow task: dbt_build"| stg_trips
@@ -45,7 +47,7 @@ flowchart LR
     fct_trips -.->|"start and end station keys"| dim_station
 ```
 
-Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434) and an Airflow container (`bixi-airflow`, port 8080) that runs the DAG `bixi_pipeline`: `load_raw` then `dbt_build`.
+Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434) and an Airflow container (`bixi-airflow`, port 8080) that runs the DAG `bixi_pipeline`: `download_bixi`, then `load_raw`, then `dbt_build`.
 
 The dbt lineage graph below (generated with `dbt docs generate`) shows how the sources, staging models, marts and data tests depend on each other:
 
@@ -67,7 +69,7 @@ The dbt lineage graph below (generated with `dbt docs generate`) shows how the s
 ## Design choices
 
 - **Raw data is kept as received** (text columns, source file recorded), so every cleaning rule lives in dbt and can be audited.
-- **Reloads are idempotent**: the loader deletes a file's rows before reloading it, so re-running never creates duplicates.
+- **Reloads are idempotent**: the loader deletes a file's rows before reloading it, so re-running never creates duplicates. If BIXI republishes a year under a new file name, the rows of the older file of the same year are deleted in the same transaction.
 - **Join on the UTC hour** to avoid daylight saving time ambiguity; local time is derived for analysis.
 - **Missing weather is flagged, not dropped**: trips are never lost, `has_weather` marks hours without a measurement.
 - **Rejected trips are counted, not hidden**: `dq_rejected_trips` reports every excluded trip by source file and reason. One test checks that its kept count equals `stg_bixi_trips`, and another fails the run if a source file rejects more than 5% of its trips.
@@ -76,8 +78,10 @@ The dbt lineage graph below (generated with `dbt docs generate`) shows how the s
 - **No slowly changing dimension for stations**: I compared each station's average start position in 2025 and 2026 (stations with more than 100 trips in both years). The ten largest shifts are 47 to 132 m, and only one (`McNamara / St-Martin O`, 132 m) exceeds 100 m, which is the same order as the coordinate noise described above. With no clear sign of stations being moved, `dim_station` keeps one row per station instead of a history of positions. This check only covers coordinates at the station-name level; it does not test name changes.
 - **Station keys are an MD5 hash of a normalized station name** (lowercased, punctuation and spaces removed, in the `station_key` dbt macro), so spelling variants collapse into one station, and the fact table and the dimension can still be built independently and join. All merged variants were less than 50 m apart (44 m at most), and the most frequent spelling is kept as the display name.
 - **`fct_trips` is incremental**: a run only inserts trips with a `start_hour_utc` later than the latest one already loaded. Test: after deleting August 2026 (2,239,567 trips), a run restored exactly those rows in 20 s, against 460 to 536 s for a full rebuild, and the total returned to 23,351,725. Limits: trips corrected afterwards in an already loaded period, or a partially loaded hour, are not picked up. Use `dbt run --select fct_trips --full-refresh` to rebuild everything.
-- **Airflow retries and timeout**: `load_raw` retries once after 2 minutes, in case of a transient database or disk error. `dbt_build` is not retried, because a failing data test is not transient, and it is stopped after 2 hours. The DAG has run end to end with these settings (both tasks succeeded on the first attempt), but no retry or timeout was actually triggered.
-- **Airflow runs on SQLite (known limitation)**: the Airflow container uses `airflow standalone`, which keeps its internal metadata in a SQLite file. During testing the scheduler stopped once with `database is locked`; `docker restart bixi-airflow` brought it back. A sturdier setup would keep the Airflow metadata in the PostgreSQL container, which this project does not do.
+- **`download_bixi` task**: `ingestion/download_bixi.py` reads the BIXI open data page, finds the ZIP link of each year (the links are not predictable) and downloads only files that are missing or whose size changed. In Airflow it runs first.
+- **Airflow retries and timeouts (configured, never triggered)**: `download_bixi` retries twice, 5 minutes apart, with a 1 hour timeout. `load_raw` retries once after 2 minutes, in case of a transient database or disk error. `dbt_build` is not retried, because a failing data test is not transient, and it is stopped after 2 hours. The DAG has run end to end with these settings and every task succeeded on its first attempt, but no retry or timeout was actually triggered.
+- **Scheduler health check threshold set to 120 s (one incident)**: during one run, the Airflow scheduler reported a heartbeat 38.67 s late, above the default 30 s threshold. Airflow then reset `dbt_build` as an orphaned task and started a second attempt. I raised the threshold to 120 s, which is the likely fix but not a proven one: the cause of the delay is unknown, and one later run completed without incident (a single run does not prove it).
+- **Airflow runs on SQLite (known limitation)**: the Airflow container uses `airflow standalone`, which keeps its internal metadata in a SQLite file. During testing the scheduler stopped once with `database is locked`; `docker restart bixi-airflow` brought it back. A sturdier setup would keep the Airflow metadata in the PostgreSQL container, which this project does not do. I did not establish a link between this and the heartbeat incident above.
 - The earlier SQL scripts in `sql/` produced the same staging and hourly tables and were used to validate the dbt models (same row counts and trip totals).
 
 ## Query performance
@@ -116,27 +120,28 @@ The dbt lineage graph below (generated with `dbt docs generate`) shows how the s
 
 The raw files are not stored in the repository. Put them in `data/raw/`:
 
-- **BIXI trips**: the yearly open-data ZIP files from [BIXI Montreal open data](https://bixi.com/fr/donnees-ouvertes/) (one ZIP per year, each containing one CSV). Keep the ZIPs as downloaded, `load_raw.py` reads them directly.
+- **BIXI trips**: the yearly open-data ZIP files from [BIXI Montreal open data](https://bixi.com/fr/donnees-ouvertes/) (one ZIP per year, each containing one CSV). Run `python ingestion/download_bixi.py` to download them (add `--dry-run` to only see what would be done), or download them by hand. Keep the ZIPs as downloaded, `load_raw.py` reads them directly.
 - **Hourly weather**: one CSV per year named `weather_<year>.csv` (for example `weather_2025.csv`, `weather_2026.csv`). They are produced by the extraction script of the companion project [bixi-weather-demand](https://github.com/NadaAf25/bixi-weather-demand): run `src/01_extract_weather.py --years 2025 2026` there (see `--help` for the other options), then copy the CSV files into this project's `data/raw/`.
 
 ## Run it
 
-Requirements: Docker Desktop and the raw files in `data/raw/` (see above).
+Requirements: Docker Desktop and the weather CSV files in `data/raw/` (see above). The BIXI ZIPs are downloaded by the first task of the DAG.
 
 ```bash
 docker compose up -d --build
 psql -h localhost -p 5434 -U bixi -d bixi -f sql/01_schema_raw.sql
 ```
 
-Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When both tasks are green, the result is in the `marts` schema. A full run (reloading about 23 million trips, then building the nine models and running the tests) took 14 min 57 s on a laptop in one measured run: about 8 minutes for `load_raw` and 7 for `dbt_build`, with `fct_trips` built incrementally.
+Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When the three tasks are green, the result is in the `marts` schema. A full run (download check, reloading about 23 million trips, then building the nine models and running the tests) took 20 min 56 s on a laptop in one measured run: 8 s for `download_bixi`, 12 min 30 s for `load_raw` and 8 min 3 s for `dbt_build`, with `fct_trips` built incrementally and every task succeeding on its first attempt. An earlier run without the download task took 14 min 57 s, so timings vary on this laptop.
 
-![Airflow DAG bixi_pipeline: load_raw then dbt_build, both tasks succeeded in 14 min 57 s](docs/airflow_dag.png)
+![Airflow DAG bixi_pipeline: download_bixi, then load_raw, then dbt_build, all three tasks succeeded in 20 min 56 s](docs/airflow_dag.png)
 
 To run the steps by hand instead (Python 3 required):
 
 ```bash
 python -m venv .venv
 pip install dbt-postgres psycopg2-binary
+python ingestion/download_bixi.py
 python ingestion/load_raw.py
 cd dbt
 dbt build
