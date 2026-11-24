@@ -125,6 +125,8 @@ psql -h localhost -p 5434 -U bixi -d bixi -f sql/01_schema_raw.sql
 
 Then open Airflow at http://localhost:8080, open the DAG `bixi_pipeline` and click Trigger. When both tasks are green, the result is in the `marts` schema. A full run (reloading about 23 million trips, then building the nine models and running the tests) took 14 min 57 s on a laptop in one measured run: about 8 minutes for `load_raw` and 7 for `dbt_build`, with `fct_trips` built incrementally.
 
+![Airflow DAG bixi_pipeline: load_raw then dbt_build, both tasks succeeded in 14 min 57 s](docs/airflow_dag.png)
+
 To run the steps by hand instead (Python 3 required):
 
 ```bash
