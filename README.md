@@ -47,6 +47,10 @@ flowchart LR
 
 Everything runs in Docker: a PostgreSQL 16 container (`bixi-postgres`, port 5434) and an Airflow container (`bixi-airflow`, port 8080) that runs the DAG `bixi_pipeline`: `load_raw` then `dbt_build`.
 
+The dbt lineage graph below (generated with `dbt docs generate`) shows how the sources, staging models, marts and data tests depend on each other:
+
+![dbt lineage graph: raw sources, staging models, marts and singular tests](docs/dbt_lineage.png)
+
 ## Results
 
 - `stg_bixi_trips`: 23,351,725 trips kept (durations between 1 minute and 24 hours).
