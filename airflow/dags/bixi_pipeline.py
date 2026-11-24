@@ -8,12 +8,20 @@ VENV = "/home/airflow/dbt_venv/bin"
 
 with DAG(
     dag_id="bixi_pipeline",
-    description="Load raw BIXI and weather files, then run dbt build",
+    description="Download the BIXI yearly ZIP files, load raw BIXI and weather files, then run dbt build",
     start_date=datetime(2026, 1, 1),
     schedule=None,
     catchup=False,
     tags=["bixi"],
 ) as dag:
+    download_bixi = BashOperator(
+        task_id="download_bixi",
+        bash_command=f"cd {PROJECT} && {VENV}/python ingestion/download_bixi.py",
+        retries=2,
+        retry_delay=timedelta(minutes=5),
+        execution_timeout=timedelta(hours=1),
+    )
+
     load_raw = BashOperator(
         task_id="load_raw",
         bash_command=f"cd {PROJECT} && {VENV}/python ingestion/load_raw.py",
@@ -27,4 +35,4 @@ with DAG(
         execution_timeout=timedelta(hours=2),
     )
 
-    load_raw >> dbt_build
+    download_bixi >> load_raw >> dbt_build
